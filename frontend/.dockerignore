@@ -1,0 +1,21 @@
+# .dockerignore for frontend
+node_modules
+npm-debug.log
+.npm
+.npmrc
+yarn.lock
+pnpm-lock.yaml
+dist
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+.vscode
+.idea
+*.swp
+.DS_Store
+tests
+test-container
+docs
+README.md

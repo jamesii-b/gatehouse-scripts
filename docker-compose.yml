@@ -1,0 +1,152 @@
+# =============================================================================
+# Gatehouse — Docker Compose (production)
+# Copy .env.example → .env and fill in all REQUIRED values before running.
+# Usage:
+#   docker compose up -d          # start
+#   docker compose down           # stop
+#   docker compose logs -f        # tail all logs
+#   docker compose pull && \
+#     docker compose up -d --build  # update
+# =============================================================================
+
+services:
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: gatehouse-redis
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    networks:
+      - gatehouse-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Backend (Flask + gunicorn) ─────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        REPO_URL: https://github.com/CoryHawkless/gatehouse-api.git
+        BRANCH: ${BACKEND_BRANCH:-main}
+    image: gatehouse-backend:latest
+    container_name: gatehouse-backend
+    # Backend is NOT exposed to the host — only reachable via the frontend proxy.
+    # Uncomment the line below only for local debugging:
+    # ports:
+    #   - "127.0.0.1:5000:5000"
+    environment:
+      # ── Required ────────────────────────────────────────────────────────────
+      SECRET_KEY:         "${SECRET_KEY}"
+      DATABASE_URL:       "${DATABASE_URL}"
+      ENCRYPTION_KEY:     "${ENCRYPTION_KEY:-}"
+      CA_ENCRYPTION_KEY:  "${CA_ENCRYPTION_KEY:-}"
+      # ── Redis ───────────────────────────────────────────────────────────────
+      REDIS_URL:              "redis://redis:6379/0"
+      SESSION_REDIS_URL:      "redis://redis:6379/0"
+      RATELIMIT_STORAGE_URL:  "redis://redis:6379/1"
+      # ── Flask ───────────────────────────────────────────────────────────────
+      FLASK_ENV:            "production"
+      FLASK_APP:            "manage.py"
+      PYTHONUNBUFFERED:     "1"
+      # ── CORS / URLs ─────────────────────────────────────────────────────────
+      CORS_ORIGINS:   "${FRONTEND_URL:-http://localhost:3000}"
+      FRONTEND_URL:   "${FRONTEND_URL:-http://localhost:3000}"
+      # ── WebAuthn ────────────────────────────────────────────────────────────
+      WEBAUTHN_RP_ID:    "${WEBAUTHN_RP_ID:-localhost}"
+      WEBAUTHN_RP_NAME:  "${WEBAUTHN_RP_NAME:-Gatehouse}"
+      WEBAUTHN_ORIGIN:   "${WEBAUTHN_ORIGIN:-http://localhost:3000}"
+      # ── OIDC ────────────────────────────────────────────────────────────────
+      OIDC_ISSUER_URL:   "${OIDC_ISSUER_URL:-http://localhost:5000}"
+      # ── Session cookies ─────────────────────────────────────────────────────
+      # Set SESSION_COOKIE_SECURE=True in production (requires HTTPS)
+      SESSION_COOKIE_SECURE:   "${SESSION_COOKIE_SECURE:-False}"
+      SESSION_COOKIE_SAMESITE: "${SESSION_COOKIE_SAMESITE:-Lax}"
+      # ── Logging ─────────────────────────────────────────────────────────────
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    volumes:
+      - backend-logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - gatehouse-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ── Frontend (nginx → React SPA) ───────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        REPO_URL: https://github.com/CoryHawkless/gatehouse-ui.git
+        BRANCH: ${FRONTEND_BRANCH:-main}
+    image: gatehouse-frontend:latest
+    container_name: gatehouse-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - gatehouse-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+volumes:
+  redis-data:
+    driver: local
+  backend-logs:
+    driver: local
+
+# ── Network ────────────────────────────────────────────────────────────────────
+networks:
+  gatehouse-network:
+    driver: bridge
+
